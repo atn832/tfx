@@ -30,6 +30,7 @@ from tfx.components.infra_validator import error_types
 from tfx.components.infra_validator import request_builder
 from tfx.components.infra_validator import serving_bins
 from tfx.components.infra_validator import types as iv_types
+from tfx.components.infra_validator.model_server_runners import kubernetes_runner
 from tfx.components.infra_validator.model_server_runners import local_docker_runner
 from tfx.proto import infra_validator_pb2
 from tfx.types import artifact_utils
@@ -41,6 +42,8 @@ _DEFAULT_NUM_TRIES = 5
 _DEFAULT_POLLING_INTERVAL_SEC = 1
 _DEFAULT_MAX_LOADING_TIME_SEC = 300
 _DEFAULT_MODEL_NAME = 'infra-validation-model'
+
+_TENSORFLOW_SERVING = 'tensorflow_serving'
 
 # Filename of infra blessing artifact on succeed.
 BLESSED = 'INFRA_BLESSED'
@@ -71,6 +74,12 @@ def _create_model_server_runner(
   platform = serving_spec.WhichOneof('serving_platform')
   if platform == 'local_docker':
     return local_docker_runner.LocalDockerRunner(
+        model_path=model_path,
+        serving_binary=serving_binary,
+        serving_spec=serving_spec
+    )
+  elif platform == 'kubernetes':
+    return kubernetes_runner.KubernetesRunner(
         model_path=model_path,
         serving_binary=serving_binary,
         serving_spec=serving_spec
@@ -137,6 +146,7 @@ class Executor(base_executor.BaseExecutor):
       examples = artifact_utils.get_single_instance(input_dict['examples'])
       requests = request_builder.build_requests(
           model_name=serving_spec.model_name,
+          model=model,
           examples=examples,
           request_spec=request_spec)
     else:
@@ -167,7 +177,7 @@ class Executor(base_executor.BaseExecutor):
       serving_spec: infra_validator_pb2.ServingSpec) -> Text:
     model_path = path_utils.serving_model_path(model_uri)
     serving_binary = serving_spec.WhichOneof('serving_binary')
-    if serving_binary == 'tensorflow_serving':
+    if serving_binary == _TENSORFLOW_SERVING:
       # TensorFlow Serving requires model to be stored in its own directory
       # structure flavor. If current model_path does not conform to the flavor,
       # we need to make a copy to the temporary path.
@@ -197,7 +207,7 @@ class Executor(base_executor.BaseExecutor):
       requests: List[iv_types.Request]):
 
     for i in range(validation_spec.num_tries):
-      logging.info('Infra validation trial %d/%d start.', i + 1,
+      logging.info('Starting infra validation (attempt %d/%d).', i + 1,
                    validation_spec.num_tries)
       try:
         self._ValidateOnce(
